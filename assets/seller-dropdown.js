@@ -132,12 +132,12 @@
     trigger.className = 'seller-dropdown-trigger placeholder';
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
-    trigger.innerHTML = `<span class="seller-trigger-main"><span class="seller-trigger-avatar">S</span><span class="seller-dropdown-value"></span></span><span class="seller-trigger-chevron">⌄</span>`;
+    trigger.innerHTML = `<span class="seller-trigger-main"><span class="seller-dropdown-value"></span></span><svg class="seller-trigger-chevron" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M5.5 7.5 10 12l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
     const panel = document.createElement('div');
     panel.className = 'seller-dropdown-panel';
     panel.hidden = true;
-    panel.innerHTML = `<div class="seller-dropdown-search-wrap"><span class="seller-search-icon">⌕</span><input class="seller-dropdown-search" type="search" placeholder="Cari nama seller..." autocomplete="off" spellcheck="false"><button type="button" class="seller-search-clear" aria-label="Bersihkan pencarian" hidden>×</button></div><div class="seller-dropdown-meta"><span>Pilih seller</span><span class="seller-dropdown-count"></span></div><div class="seller-dropdown-options" role="listbox"></div>`;
+    panel.innerHTML = `<div class="seller-dropdown-search-wrap"><svg class="seller-search-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><input class="seller-dropdown-search" type="search" placeholder="Cari nama seller..." autocomplete="off" spellcheck="false"><button type="button" class="seller-search-clear" aria-label="Bersihkan pencarian" hidden>×</button></div><div class="seller-dropdown-meta"><span>Pilih seller</span><span class="seller-dropdown-count"></span></div><div class="seller-dropdown-options" role="listbox"></div>`;
 
     wrapper.appendChild(trigger);
     wrapper.appendChild(panel);
@@ -192,9 +192,6 @@
       refreshOptions(wrapper, search.value);
     });
 
-    // Watch only this select's option list. This keeps the custom UI in sync
-    // when the SPA receives seller data asynchronously without creating a
-    // document-wide mutation feedback loop.
     const optionObserver = new MutationObserver(() => {
       updateTrigger(wrapper);
       refreshOptions(wrapper, search.value);
