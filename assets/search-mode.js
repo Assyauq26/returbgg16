@@ -26,6 +26,30 @@
     } finally { clearTimeout(timer); }
   }
 
+  async function searchApi(q, sellerName) {
+    if (!cfg.API_URL) throw new Error('API_URL belum diatur.');
+    const params = new URLSearchParams({ action: 'searchReturns' });
+    if (q) params.set('q', q);
+    if (sellerName) params.set('sellerName', sellerName);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`${cfg.API_URL}?${params.toString()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Server merespons HTTP ${response.status}.`);
+      const payload = await response.json();
+      if (!payload.ok) throw new Error(payload.message || 'Pencarian gagal.');
+      return payload.data || {};
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('Pencarian terlalu lama. Periksa koneksi atau Apps Script.');
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
   async function loadReturnSellers(force = false) {
     if (state.sellersLoading) return;
     if (state.sellersLoaded && !force) return;
@@ -169,7 +193,7 @@
 
     if (q && sellerName) {
       updateSelectionNote();
-      results.innerHTML = '<div class="empty"><b>Pilih satu metode pencarian.</b><span>Gunakan nomor resi <i>atau</i> nama seller, bukan keduanya.</span></div>';
+      results.innerHTML = '<div class="empty"><b>Pilih satu metode pencarian.</b><span>Gunakan nomor resi <i>atau</i> seller, bukan keduanya.</span></div>';
       return;
     }
     if (!q && !sellerName) {
@@ -187,7 +211,7 @@
     results.innerHTML = '<div class="loading-state"><span class="spinner spinner-dark"></span> Mencari data retur...</div>';
 
     try {
-      const response = await api({ action: 'searchReturns', q: q || '', sellerName: sellerName || '' });
+      const response = await searchApi(q, sellerName);
       if (request !== state.request) return;
       const rows = Array.isArray(response.data) ? response.data : [];
       if (!rows.length) {
