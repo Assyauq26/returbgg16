@@ -3,7 +3,6 @@
 
   const SELECTORS = ['#seller', '#searchSeller'];
   let openDropdown = null;
-
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
@@ -16,6 +15,7 @@
   }
 
   function closeDropdown(dropdown) {
+    if (!dropdown) return;
     dropdown.classList.remove('is-open');
     const trigger = dropdown.querySelector('.seller-dropdown-trigger');
     const panel = dropdown.querySelector('.seller-dropdown-panel');
@@ -33,7 +33,7 @@
     if (trigger) trigger.setAttribute('aria-expanded', 'true');
     if (panel) panel.hidden = false;
     openDropdown = dropdown;
-    refreshOptions(dropdown, '');
+    refreshOptions(dropdown, search?.value || '');
     requestAnimationFrame(() => search?.focus());
   }
 
@@ -42,7 +42,7 @@
     return option ? option.textContent.trim() : '';
   }
 
-  function optionData(select) {
+  function rawOptions(select) {
     return Array.from(select.options).map((option) => ({
       value: option.value,
       label: option.textContent.trim(),
@@ -50,41 +50,53 @@
     }));
   }
 
-  function refreshOptions(dropdown, query) {
+  function getInfo(select) {
+    const all = rawOptions(select);
+    return {
+      isSearch: select.id === 'searchSeller',
+      real: all.filter((o) => o.value !== '' && !/^memuat seller|gagal memuat seller$/i.test(o.label)),
+      loading: all.some((o) => o.disabled && /memuat seller/i.test(o.label)),
+      failed: all.some((o) => o.disabled && /gagal memuat seller/i.test(o.label))
+    };
+  }
+
+  function refreshOptions(dropdown, query = '') {
     const select = dropdown.querySelector('select');
     const list = dropdown.querySelector('.seller-dropdown-options');
     const count = dropdown.querySelector('.seller-dropdown-count');
     if (!select || !list) return;
 
+    const info = getInfo(select);
     const normalized = String(query || '').trim().toLowerCase();
-    const options = optionData(select);
-    const filtered = options.filter((option) => !normalized || option.label.toLowerCase().includes(normalized));
 
-    if (count) count.textContent = normalized ? `${filtered.length} ditemukan` : `${options.filter(o => o.label).length} pilihan`;
+    if (info.loading) {
+      dropdown.classList.add('is-loading');
+      if (count) count.textContent = 'Memuat...';
+      list.innerHTML = `<div class="seller-dropdown-skeleton" aria-label="Memuat daftar seller"><span></span><span></span><span></span><span></span></div>`;
+      return;
+    }
 
+    dropdown.classList.remove('is-loading');
+    const source = info.isSearch && !normalized
+      ? [{ value: '', label: 'Semua seller', disabled: false }, ...info.real]
+      : info.real;
+    const filtered = source.filter((option) => !normalized || option.label.toLowerCase().includes(normalized));
+
+    if (count) count.textContent = normalized ? `${filtered.length} ditemukan` : `${info.real.length} seller`;
     if (!filtered.length) {
-      list.innerHTML = '<div class="seller-dropdown-empty">Seller tidak ditemukan</div>';
+      list.innerHTML = `<div class="seller-dropdown-empty"><b>${info.failed ? 'Gagal memuat seller' : 'Seller tidak ditemukan'}</b><span>${info.failed ? 'Periksa koneksi lalu coba lagi.' : 'Coba kata kunci lain.'}</span></div>`;
       return;
     }
 
     list.innerHTML = filtered.map((option) => {
       const selected = option.value === select.value;
-      return `<button type="button" class="seller-dropdown-option${selected ? ' is-selected' : ''}" data-value="${esc(option.value)}" ${option.disabled ? 'disabled' : ''}>
+      const label = option.value === '' && info.isSearch ? 'Semua seller' : option.label;
+      return `<button type="button" role="option" aria-selected="${selected}" class="seller-dropdown-option${selected ? ' is-selected' : ''}" data-value="${esc(option.value)}">
         <span class="seller-option-icon">${selected ? '✓' : '•'}</span>
-        <span class="seller-option-label">${esc(option.label || 'Tanpa nama')}</span>
+        <span class="seller-option-label">${esc(label || 'Tanpa nama')}</span>
         ${selected ? '<span class="seller-option-check">Terpilih</span>' : ''}
       </button>`;
     }).join('');
-  }
-
-  function choose(dropdown, value) {
-    const select = dropdown.querySelector('select');
-    if (!select) return;
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    select.dispatchEvent(new Event('input', { bubbles: true }));
-    updateTrigger(dropdown);
-    closeDropdown(dropdown);
   }
 
   function updateTrigger(dropdown) {
@@ -92,12 +104,14 @@
     const trigger = dropdown.querySelector('.seller-dropdown-trigger');
     const label = dropdown.querySelector('.seller-dropdown-value');
     if (!select || !trigger || !label) return;
+    const info = getInfo(select);
     const text = selectedLabel(select) || (select.id === 'searchSeller' ? 'Semua seller' : 'Pilih seller');
-    if (label.textContent !== text) label.textContent = text;
     trigger.classList.toggle('has-value', !!select.value);
     trigger.classList.toggle('placeholder', !select.value);
-    const aria = `${select.id === 'searchSeller' ? 'Pilih seller untuk pencarian' : 'Pilih seller'}, ${text}`;
-    if (trigger.getAttribute('aria-label') !== aria) trigger.setAttribute('aria-label', aria);
+    trigger.classList.toggle('is-loading', info.loading);
+    trigger.classList.toggle('is-error', info.failed);
+    label.textContent = info.loading ? 'Memuat seller...' : (info.failed ? 'Gagal memuat seller' : text);
+    trigger.setAttribute('aria-label', `${select.id === 'searchSeller' ? 'Pilih seller untuk pencarian' : 'Pilih seller'}, ${label.textContent}`);
   }
 
   function build(select) {
@@ -107,7 +121,6 @@
     const wrapper = document.createElement('div');
     wrapper.className = `seller-dropdown${select.id === 'searchSeller' ? ' seller-dropdown-search-filter' : ''}`;
     wrapper.dataset.for = select.id;
-
     select.parentNode.insertBefore(wrapper, select);
     wrapper.appendChild(select);
     select.classList.add('native-seller-select');
@@ -128,21 +141,20 @@
 
     wrapper.appendChild(trigger);
     wrapper.appendChild(panel);
-    updateTrigger(wrapper);
-    refreshOptions(wrapper, '');
-
-    trigger.addEventListener('click', (event) => {
-      event.preventDefault();
-      if (wrapper.classList.contains('is-open')) closeDropdown(wrapper);
-      else open(wrapper);
-    });
 
     const search = panel.querySelector('.seller-dropdown-search');
     const clear = panel.querySelector('.seller-search-clear');
+
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (wrapper.classList.contains('is-open')) closeDropdown(wrapper); else open(wrapper);
+    });
+
     search.addEventListener('input', () => {
       refreshOptions(wrapper, search.value);
       clear.hidden = !search.value;
     });
+
     clear.addEventListener('click', () => {
       search.value = '';
       clear.hidden = true;
@@ -152,8 +164,13 @@
 
     panel.querySelector('.seller-dropdown-options').addEventListener('click', (event) => {
       const option = event.target.closest('.seller-dropdown-option');
-      if (!option || option.disabled) return;
-      choose(wrapper, option.dataset.value || '');
+      if (!option) return;
+      select.value = option.dataset.value || '';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      updateTrigger(wrapper);
+      refreshOptions(wrapper, search.value);
+      closeDropdown(wrapper);
     });
 
     search.addEventListener('keydown', (event) => {
@@ -162,10 +179,10 @@
         closeDropdown(wrapper);
         trigger.focus();
       } else if (event.key === 'Enter') {
-        const first = panel.querySelector('.seller-dropdown-option:not([disabled])');
+        const first = panel.querySelector('.seller-dropdown-option');
         if (first) {
           event.preventDefault();
-          choose(wrapper, first.dataset.value || '');
+          first.click();
         }
       }
     });
@@ -174,6 +191,19 @@
       updateTrigger(wrapper);
       refreshOptions(wrapper, search.value);
     });
+
+    // Watch only this select's option list. This keeps the custom UI in sync
+    // when the SPA receives seller data asynchronously without creating a
+    // document-wide mutation feedback loop.
+    const optionObserver = new MutationObserver(() => {
+      updateTrigger(wrapper);
+      refreshOptions(wrapper, search.value);
+    });
+    optionObserver.observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
+
+    wrapper._sellerOptionObserver = optionObserver;
+    updateTrigger(wrapper);
+    refreshOptions(wrapper, '');
   }
 
   function syncNewSelects() {
@@ -186,17 +216,12 @@
   document.addEventListener('click', (event) => {
     if (!event.target.closest('.seller-dropdown')) closeAll();
   });
-
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && openDropdown) closeDropdown(openDropdown);
   });
 
-  // Observe only for NEW native seller selects created by the SPA.
-  // Never update an already-built dropdown from the observer: its own
-  // change listener handles that, preventing a MutationObserver feedback loop.
   const observer = new MutationObserver(syncNewSelects);
   observer.observe(document.getElementById('app') || document.body, { childList: true, subtree: true });
-
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncNewSelects, { once: true });
   else syncNewSelects();
 })();
