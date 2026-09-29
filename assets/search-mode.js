@@ -17,7 +17,7 @@
       if (!response.ok) throw new Error(`Server merespons HTTP ${response.status}.`);
       const data = await response.json();
       if (!data.ok) throw new Error(data.message || 'Pencarian gagal.');
-      return data;
+      return data.data || {mode:'awb', sellerName:'', data:[]};
     } catch (error) {
       if (error.name === 'AbortError') throw new Error('Pencarian terlalu lama. Periksa koneksi atau Apps Script.');
       throw error;
@@ -75,7 +75,7 @@
     try {
       const response = await apiSearch(q);
       if (request !== searchState.request) return;
-      const rows = response.data || [];
+      const rows = Array.isArray(response.data) ? response.data : [];
       const mode = response.mode || 'awb';
       const matchedSeller = response.sellerName || '';
       if (!rows.length) {
