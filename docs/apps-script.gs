@@ -5,7 +5,6 @@ const CONFIG = {
   TIMEZONE: 'Asia/Jakarta',
   SELLER_CACHE_SECONDS: 600,
   RETURN_SELLER_CACHE_SECONDS: 600,
-  SEARCH_CACHE_SECONDS: 120,
   SEARCH_BATCH_SIZE: 1000,
   SEARCH_MAX_RESULTS: 500,
 };
@@ -43,7 +42,10 @@ function doGet(e) {
     const action = String(e?.parameter?.action || 'health');
     if (action === 'getSellers') return out_({ ok: true, data: getSellers_() });
     if (action === 'getReturnSellers') return out_({ ok: true, data: getReturnSellers_() });
-    return out_({ ok: true, service: 'retur-bgg16', version: '2026-09-29-search-v3', time: new Date().toISOString() });
+    if (action === 'searchReturns') {
+      return out_({ ok: true, data: searchReturns_({ q: e?.parameter?.q || '', sellerName: e?.parameter?.sellerName || '' }) });
+    }
+    return out_({ ok: true, service: 'retur-bgg16', version: '2026-09-29-search-v4', time: new Date().toISOString() });
   } catch (error) {
     return out_({ ok: false, message: error.message || String(error) });
   }
@@ -61,6 +63,19 @@ function doPost(e) {
   } catch (error) {
     return out_({ ok: false, message: error.message || String(error) });
   }
+}
+
+function normalizeText_(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function norm_(value) {
+  return normalizeText_(value).replace(/\s+/g, '').toUpperCase();
 }
 
 function getSellers_() {
@@ -89,7 +104,7 @@ function addSeller_(name) {
   if (!name) throw new Error('Nama seller wajib diisi.');
 
   const sellers = getSellers_();
-  const existing = sellers.find((seller) => seller.name.toLowerCase() === name.toLowerCase());
+  const existing = sellers.find((seller) => normalizeText_(seller.name) === normalizeText_(name));
   if (existing) return existing;
 
   const item = { id: Utilities.getUuid(), name };
@@ -98,16 +113,15 @@ function addSeller_(name) {
   return item;
 }
 
-function norm_(value) {
-  return String(value || '').trim().replace(/\s+/g, '').toUpperCase();
-}
-
 function existingAwbs_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return new Set();
   const values = sheet.getRange(2, 2, lastRow - 1, 1).getDisplayValues();
   const set = new Set();
-  values.forEach((row) => set.add(norm_(row[0])));
+  values.forEach((row) => {
+    const value = norm_(row[0]);
+    if (value) set.add(value);
+  });
   return set;
 }
 
@@ -116,7 +130,7 @@ function saveReturns_(body) {
   const seller = String(body.sellerName || '').trim();
   if (!seller) throw new Error('Seller wajib diisi.');
 
-  const sellerExists = getSellers_().some((item) => item.name.toLowerCase() === seller.toLowerCase());
+  const sellerExists = getSellers_().some((item) => normalizeText_(item.name) === normalizeText_(seller));
   if (!sellerExists) throw new Error('Seller tidak ditemukan di master seller.');
 
   const awbs = [...new Set((Array.isArray(body.awbs) ? body.awbs : []).map(norm_).filter(Boolean))];
@@ -130,8 +144,7 @@ function saveReturns_(body) {
   const now = new Date();
   const startRow = sheet.getLastRow() + 1;
   sheet.getRange(startRow, 1, fresh.length, 4).setValues(fresh.map((awb) => [now, awb, seller, 'WEB']));
-  const cache = CacheService.getScriptCache();
-  cache.remove('retur_bgg16_return_sellers_v2');
+  CacheService.getScriptCache().remove('retur_bgg16_return_sellers_v2');
 
   return {
     savedCount: fresh.length,
@@ -142,7 +155,7 @@ function saveReturns_(body) {
 
 function getReturnSellers_() {
   const cache = CacheService.getScriptCache();
-  const key = 'retur_bgg16_return_sellers_v2';
+  const key = 'retur_bgg16_return_sellers_v3';
   const cached = cache.get(key);
   if (cached) return JSON.parse(cached);
 
@@ -150,14 +163,12 @@ function getReturnSellers_() {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  // Only read seller_name (column C). The previous implementation loaded all
-  // return rows and all four columns before rebuilding this small index.
   const values = sheet.getRange(2, 3, lastRow - 1, 1).getDisplayValues();
   const map = new Map();
   values.forEach((row) => {
     const name = String(row[0] || '').trim();
-    if (!name) return;
-    const keyName = name.toLowerCase();
+    const keyName = normalizeText_(name);
+    if (!keyName) return;
     if (!map.has(keyName)) map.set(keyName, { name, count: 0 });
     map.get(keyName).count += 1;
   });
@@ -168,11 +179,27 @@ function getReturnSellers_() {
   return sellers;
 }
 
+function getReturnColumns_(sheet) {
+  const lastColumn = Math.max(3, sheet.getLastColumn());
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(normalizeText_);
+  const find = (names, fallback) => {
+    for (let i = 0; i < headers.length; i += 1) {
+      if (names.indexOf(headers[i]) !== -1) return i + 1;
+    }
+    return fallback;
+  };
+  return {
+    timestamp: find(['timestamp', 'tanggal', 'waktu', 'created_at', 'created at'], 1),
+    awb: find(['awb', 'nomor resi', 'nomor resi / awb', 'resi', 'tracking number'], 2),
+    seller: find(['seller_name', 'seller name', 'nama seller', 'seller'], 3),
+  };
+}
+
 function searchReturns_(body) {
   const queryRaw = String(body.q || '').trim();
   const sellerRaw = String(body.sellerName || '').trim();
   const query = norm_(queryRaw);
-  const sellerQuery = sellerRaw.toLowerCase();
+  const sellerQuery = normalizeText_(sellerRaw);
 
   if (!query && !sellerQuery) return { mode: 'none', sellerName: '', data: [] };
 
@@ -180,36 +207,41 @@ function searchReturns_(body) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return { mode: sellerQuery ? 'seller' : 'awb', sellerName: sellerRaw, data: [] };
 
+  const columns = getReturnColumns_(sheet);
+  const maxCol = Math.max(columns.timestamp, columns.awb, columns.seller);
   const results = [];
   const batchSize = Math.max(100, CONFIG.SEARCH_BATCH_SIZE);
   let endRow = lastRow;
 
-  // Read newest rows first and stop after 500 matches.
   while (endRow >= 2 && results.length < CONFIG.SEARCH_MAX_RESULTS) {
     const startRow = Math.max(2, endRow - batchSize + 1);
     const rowCount = endRow - startRow + 1;
-    const values = sheet.getRange(startRow, 1, rowCount, 3).getValues();
+    const values = sheet.getRange(startRow, 1, rowCount, maxCol).getDisplayValues();
 
     for (let i = values.length - 1; i >= 0 && results.length < CONFIG.SEARCH_MAX_RESULTS; i -= 1) {
       const row = values[i];
-      const timestamp = row[0] ? new Date(row[0]).getTime() : 0;
-      const awb = norm_(row[1]);
-      const sellerName = String(row[2] || '').trim();
+      const awbRaw = row[columns.awb - 1];
+      const sellerRawRow = row[columns.seller - 1];
+      const timestampRaw = row[columns.timestamp - 1];
+      const awb = norm_(awbRaw);
+      const sellerName = String(sellerRawRow || '').trim();
       if (!awb || !sellerName) continue;
 
+      const rowSeller = normalizeText_(sellerName);
       const matches = sellerQuery
-        ? sellerName.toLowerCase() === sellerQuery
+        ? rowSeller === sellerQuery
         : awb.indexOf(query) !== -1;
       if (!matches) continue;
 
+      const parsed = timestampRaw ? new Date(timestampRaw) : null;
+      const timestamp = parsed && !isNaN(parsed.getTime()) ? parsed.getTime() : 0;
       results.push({
         timestamp,
-        timestampText: timestamp ? Utilities.formatDate(new Date(timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : '',
+        timestampText: timestamp ? Utilities.formatDate(new Date(timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : String(timestampRaw || ''),
         awb,
         sellerName,
       });
     }
-
     endRow = startRow - 1;
   }
 
