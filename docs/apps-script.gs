@@ -151,7 +151,6 @@ function loadReturnRows_() {
   })).filter((row) => row.awb && row.sellerName);
 
   const payload = JSON.stringify(rows);
-  // CacheService has a per-entry size limit. Only cache compact indexes that fit safely.
   if (payload.length <= 90000) cache.put(key, payload, CONFIG.SEARCH_CACHE_SECONDS);
   return rows;
 }
@@ -180,7 +179,6 @@ function searchReturns_(body) {
   }
 
   filtered.sort((a, b) => b.timestamp - a.timestamp);
-  filtered = filtered.slice(0, 500);
 
   return {
     mode,
