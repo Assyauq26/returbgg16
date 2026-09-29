@@ -4,7 +4,10 @@ const CONFIG = {
   DATA_SHEET: 'RETUR_DATA',
   TIMEZONE: 'Asia/Jakarta',
   SELLER_CACHE_SECONDS: 600,
+  RETURN_SELLER_CACHE_SECONDS: 600,
   SEARCH_CACHE_SECONDS: 120,
+  SEARCH_BATCH_SIZE: 1000,
+  SEARCH_MAX_RESULTS: 500,
 };
 
 let SPREADSHEET_CACHE = null;
@@ -40,7 +43,7 @@ function doGet(e) {
     const action = String(e?.parameter?.action || 'health');
     if (action === 'getSellers') return out_({ ok: true, data: getSellers_() });
     if (action === 'getReturnSellers') return out_({ ok: true, data: getReturnSellers_() });
-    return out_({ ok: true, service: 'retur-bgg16', time: new Date().toISOString() });
+    return out_({ ok: true, service: 'retur-bgg16', version: '2026-09-29-search-v3', time: new Date().toISOString() });
   } catch (error) {
     return out_({ ok: false, message: error.message || String(error) });
   }
@@ -75,7 +78,8 @@ function getSellers_() {
     .filter((row) => String(row[1]).trim() && String(row[2]).toLowerCase() !== 'false')
     .map((row) => ({ id: String(row[0]).trim(), name: String(row[1]).trim() }));
 
-  cache.put(key, JSON.stringify(sellers), CONFIG.SELLER_CACHE_SECONDS);
+  const payload = JSON.stringify(sellers);
+  if (payload.length <= 90000) cache.put(key, payload, CONFIG.SELLER_CACHE_SECONDS);
   return sellers;
 }
 
@@ -126,8 +130,8 @@ function saveReturns_(body) {
   const now = new Date();
   const startRow = sheet.getLastRow() + 1;
   sheet.getRange(startRow, 1, fresh.length, 4).setValues(fresh.map((awb) => [now, awb, seller, 'WEB']));
-  CacheService.getScriptCache().remove('retur_bgg16_search_v2');
-  CacheService.getScriptCache().remove('retur_bgg16_return_sellers_v1');
+  const cache = CacheService.getScriptCache();
+  cache.remove('retur_bgg16_return_sellers_v2');
 
   return {
     savedCount: fresh.length,
@@ -136,9 +140,9 @@ function saveReturns_(body) {
   };
 }
 
-function loadReturnRows_() {
+function getReturnSellers_() {
   const cache = CacheService.getScriptCache();
-  const key = 'retur_bgg16_search_v2';
+  const key = 'retur_bgg16_return_sellers_v2';
   const cached = cache.get(key);
   if (cached) return JSON.parse(cached);
 
@@ -146,28 +150,12 @@ function loadReturnRows_() {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  const values = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
-  const rows = values.map((row) => ({
-    timestamp: row[0] ? new Date(row[0]).getTime() : 0,
-    awb: norm_(row[1]),
-    sellerName: String(row[2] || '').trim(),
-  })).filter((row) => row.awb && row.sellerName);
-
-  const payload = JSON.stringify(rows);
-  if (payload.length <= 90000) cache.put(key, payload, CONFIG.SEARCH_CACHE_SECONDS);
-  return rows;
-}
-
-function getReturnSellers_() {
-  const cache = CacheService.getScriptCache();
-  const key = 'retur_bgg16_return_sellers_v1';
-  const cached = cache.get(key);
-  if (cached) return JSON.parse(cached);
-
-  const rows = loadReturnRows_();
+  // Only read seller_name (column C). The previous implementation loaded all
+  // return rows and all four columns before rebuilding this small index.
+  const values = sheet.getRange(2, 3, lastRow - 1, 1).getDisplayValues();
   const map = new Map();
-  rows.forEach((row) => {
-    const name = String(row.sellerName || '').trim();
+  values.forEach((row) => {
+    const name = String(row[0] || '').trim();
     if (!name) return;
     const keyName = name.toLowerCase();
     if (!map.has(keyName)) map.set(keyName, { name, count: 0 });
@@ -176,7 +164,7 @@ function getReturnSellers_() {
 
   const sellers = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'id'));
   const payload = JSON.stringify(sellers);
-  if (payload.length <= 90000) cache.put(key, payload, CONFIG.SEARCH_CACHE_SECONDS);
+  if (payload.length <= 90000) cache.put(key, payload, CONFIG.RETURN_SELLER_CACHE_SECONDS);
   return sellers;
 }
 
@@ -188,27 +176,49 @@ function searchReturns_(body) {
 
   if (!query && !sellerQuery) return { mode: 'none', sellerName: '', data: [] };
 
-  const rows = loadReturnRows_();
-  let mode = 'awb';
-  let matchedSeller = '';
-  let filtered;
+  const sheet = getSheet_(CONFIG.DATA_SHEET);
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return { mode: sellerQuery ? 'seller' : 'awb', sellerName: sellerRaw, data: [] };
 
-  if (sellerQuery) {
-    mode = 'seller';
-    filtered = rows.filter((row) => row.sellerName.toLowerCase() === sellerQuery);
-    matchedSeller = filtered.length ? filtered[0].sellerName : sellerRaw;
-  } else {
-    filtered = rows.filter((row) => row.awb.indexOf(query) !== -1);
+  const results = [];
+  const batchSize = Math.max(100, CONFIG.SEARCH_BATCH_SIZE);
+  let endRow = lastRow;
+
+  // Read newest rows first and stop after 500 matches.
+  while (endRow >= 2 && results.length < CONFIG.SEARCH_MAX_RESULTS) {
+    const startRow = Math.max(2, endRow - batchSize + 1);
+    const rowCount = endRow - startRow + 1;
+    const values = sheet.getRange(startRow, 1, rowCount, 3).getValues();
+
+    for (let i = values.length - 1; i >= 0 && results.length < CONFIG.SEARCH_MAX_RESULTS; i -= 1) {
+      const row = values[i];
+      const timestamp = row[0] ? new Date(row[0]).getTime() : 0;
+      const awb = norm_(row[1]);
+      const sellerName = String(row[2] || '').trim();
+      if (!awb || !sellerName) continue;
+
+      const matches = sellerQuery
+        ? sellerName.toLowerCase() === sellerQuery
+        : awb.indexOf(query) !== -1;
+      if (!matches) continue;
+
+      results.push({
+        timestamp,
+        timestampText: timestamp ? Utilities.formatDate(new Date(timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : '',
+        awb,
+        sellerName,
+      });
+    }
+
+    endRow = startRow - 1;
   }
 
-  filtered.sort((a, b) => b.timestamp - a.timestamp);
-  filtered = filtered.slice(0, 500);
-
+  results.sort((a, b) => b.timestamp - a.timestamp);
   return {
-    mode,
-    sellerName: matchedSeller,
-    data: filtered.map((row) => ({
-      timestampText: row.timestamp ? Utilities.formatDate(new Date(row.timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : '',
+    mode: sellerQuery ? 'seller' : 'awb',
+    sellerName: sellerQuery ? (results.length ? results[0].sellerName : sellerRaw) : '',
+    data: results.map((row) => ({
+      timestampText: row.timestampText,
       awb: row.awb,
       sellerName: row.sellerName,
     })),
