@@ -43,11 +43,10 @@
   }
 
   function optionData(select) {
-    return Array.from(select.options).map((option, index) => ({
+    return Array.from(select.options).map((option) => ({
       value: option.value,
       label: option.textContent.trim(),
-      disabled: option.disabled,
-      index
+      disabled: option.disabled
     }));
   }
 
@@ -119,7 +118,6 @@
     trigger.className = 'seller-dropdown-trigger placeholder';
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
-
     trigger.innerHTML = `<span class="seller-trigger-main"><span class="seller-trigger-avatar">S</span><span class="seller-dropdown-value"></span></span><span class="seller-trigger-chevron">⌄</span>`;
 
     const panel = document.createElement('div');
@@ -129,7 +127,6 @@
 
     wrapper.appendChild(trigger);
     wrapper.appendChild(panel);
-
     updateTrigger(wrapper);
     refreshOptions(wrapper, '');
 
@@ -183,12 +180,8 @@
       const select = document.querySelector(selector);
       if (!select) return;
       const wrapper = select.closest('.seller-dropdown');
-      if (wrapper) {
-        updateTrigger(wrapper);
-        refreshOptions(wrapper, wrapper.querySelector('.seller-dropdown-search')?.value || '');
-      } else {
-        build(select);
-      }
+      if (wrapper) updateTrigger(wrapper);
+      else build(select);
     });
   }
 
