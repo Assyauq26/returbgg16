@@ -94,14 +94,9 @@
             refreshReturnSellers();
             return responseFor(cached.sellers);
           }
-          const response = await nativeFetch(`${API_URL}?action=getReturnSellers`, {
-            method: 'GET',
-            cache: 'no-store'
-          });
-          response.clone().json().then(data => {
-            if (data?.ok && Array.isArray(data.data)) writeCache(RETURN_CACHE_KEY, data.data);
-          }).catch(() => {});
-          return response;
+          const data = await refreshReturnSellers();
+          if (Array.isArray(data)) return responseFor(data);
+          return nativeFetch(`${API_URL}?action=getReturnSellers`, { method: 'GET', cache: 'no-store' });
         }
 
         if (payload?.action === 'addSeller') {
