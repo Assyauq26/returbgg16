@@ -3,7 +3,7 @@ const CONFIG = {
   SELLER_SHEET: 'SELLER_MASTER',
   DATA_SHEET: 'RETUR_DATA',
   TIMEZONE: 'Asia/Jakarta',
-  SELLER_CACHE_SECONDS: 60,
+  SELLER_CACHE_SECONDS: 600,
 };
 
 let SPREADSHEET_CACHE = null;
@@ -11,6 +11,12 @@ let SPREADSHEET_CACHE = null;
 function getSpreadsheet_() {
   if (!SPREADSHEET_CACHE) SPREADSHEET_CACHE = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   return SPREADSHEET_CACHE;
+}
+
+function getSheet_(name) {
+  const sheet = getSpreadsheet_().getSheetByName(name);
+  if (!sheet) throw new Error('Sheet ' + name + ' tidak ditemukan.');
+  return sheet;
 }
 
 function setupSheets() {
@@ -28,8 +34,14 @@ function out_(payload) {
   return ContentService.createTextOutput(JSON.stringify(payload)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function doGet() {
-  return out_({ ok: true, service: 'retur-bgg16', time: new Date().toISOString() });
+function doGet(e) {
+  try {
+    const action = String(e?.parameter?.action || 'health');
+    if (action === 'getSellers') return out_({ ok: true, data: getSellers_() });
+    return out_({ ok: true, service: 'retur-bgg16', time: new Date().toISOString() });
+  } catch (error) {
+    return out_({ ok: false, message: error.message || String(error) });
+  }
 }
 
 function doPost(e) {
@@ -47,20 +59,22 @@ function doPost(e) {
 
 function getSellers_() {
   const cache = CacheService.getScriptCache();
-  const cached = cache.get('retur_bgg16_sellers');
+  const key = 'retur_bgg16_sellers_v2';
+  const cached = cache.get(key);
   if (cached) return JSON.parse(cached);
 
-  setupSheets();
-  const sheet = getSpreadsheet_().getSheetByName(CONFIG.SELLER_SHEET);
+  const sheet = getSheet_(CONFIG.SELLER_SHEET);
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  const values = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  // Only read the three fields required by the dropdown. Avoid getDataRange()
+  // and avoid setupSheets() on every read because the sheets are already provisioned.
+  const values = sheet.getRange(2, 1, lastRow - 1, 3).getDisplayValues();
   const sellers = values
     .filter((row) => String(row[1]).trim() && String(row[2]).toLowerCase() !== 'false')
-    .map((row) => ({ id: String(row[0]), name: String(row[1]).trim() }));
+    .map((row) => ({ id: String(row[0]).trim(), name: String(row[1]).trim() }));
 
-  cache.put('retur_bgg16_sellers', JSON.stringify(sellers), CONFIG.SELLER_CACHE_SECONDS);
+  cache.put(key, JSON.stringify(sellers), CONFIG.SELLER_CACHE_SECONDS);
   return sellers;
 }
 
@@ -74,8 +88,8 @@ function addSeller_(name) {
   if (existing) return existing;
 
   const item = { id: Utilities.getUuid(), name };
-  getSpreadsheet_().getSheetByName(CONFIG.SELLER_SHEET).appendRow([item.id, item.name, true, new Date()]);
-  CacheService.getScriptCache().remove('retur_bgg16_sellers');
+  getSheet_(CONFIG.SELLER_SHEET).appendRow([item.id, item.name, true, new Date()]);
+  CacheService.getScriptCache().remove('retur_bgg16_sellers_v2');
   return item;
 }
 
@@ -86,7 +100,7 @@ function norm_(value) {
 function existingAwbs_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return new Set();
-  const values = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+  const values = sheet.getRange(2, 2, lastRow - 1, 1).getDisplayValues();
   const set = new Set();
   values.forEach((row) => set.add(norm_(row[0])));
   return set;
@@ -103,7 +117,7 @@ function saveReturns_(body) {
   const awbs = [...new Set((Array.isArray(body.awbs) ? body.awbs : []).map(norm_).filter(Boolean))];
   if (!awbs.length) throw new Error('Minimal satu AWB diperlukan.');
 
-  const sheet = getSpreadsheet_().getSheetByName(CONFIG.DATA_SHEET);
+  const sheet = getSheet_(CONFIG.DATA_SHEET);
   const existing = existingAwbs_(sheet);
   const fresh = awbs.filter((awb) => !existing.has(awb));
   if (!fresh.length) throw new Error('Semua AWB sudah pernah dicatat.');
@@ -125,7 +139,7 @@ function searchReturns_(body) {
   const sellerFilter = String(body.sellerName || '').trim().toLowerCase();
   if (query.length < 3) return [];
 
-  const sheet = getSpreadsheet_().getSheetByName(CONFIG.DATA_SHEET);
+  const sheet = getSheet_(CONFIG.DATA_SHEET);
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
