@@ -60,6 +60,13 @@
     return returnRefreshPromise;
   }
 
+  async function searchReturnsViaGet(q, sellerName) {
+    const params = new URLSearchParams({ action: 'searchReturns' });
+    if (q) params.set('q', q);
+    if (sellerName) params.set('sellerName', sellerName);
+    return nativeFetch(`${API_URL}?${params.toString()}`, { method: 'GET', cache: 'no-store' });
+  }
+
   // Warm both indexes in the background. This never blocks first paint.
   if (API_URL) {
     const cachedMaster = readCache(CACHE_KEY);
@@ -74,6 +81,12 @@
       const body = init?.body;
       if (API_URL && url === API_URL && typeof body === 'string') {
         const payload = JSON.parse(body);
+
+        if (payload?.action === 'searchReturns') {
+          // The search endpoint is read-only. Use GET so the browser does not
+          // depend on Apps Script POST handling/preflight behaviour.
+          return searchReturnsViaGet(payload.q || '', payload.sellerName || '');
+        }
 
         if (payload?.action === 'getSellers') {
           const cached = readCache(CACHE_KEY);
