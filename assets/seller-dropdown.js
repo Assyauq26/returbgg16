@@ -92,11 +92,12 @@
     const trigger = dropdown.querySelector('.seller-dropdown-trigger');
     const label = dropdown.querySelector('.seller-dropdown-value');
     if (!select || !trigger || !label) return;
-    const text = selectedLabel(select);
-    label.textContent = text || (select.id === 'searchSeller' ? 'Semua seller' : 'Pilih seller');
+    const text = selectedLabel(select) || (select.id === 'searchSeller' ? 'Semua seller' : 'Pilih seller');
+    if (label.textContent !== text) label.textContent = text;
     trigger.classList.toggle('has-value', !!select.value);
     trigger.classList.toggle('placeholder', !select.value);
-    trigger.setAttribute('aria-label', `${select.id === 'searchSeller' ? 'Pilih seller untuk pencarian' : 'Pilih seller'}, ${label.textContent}`);
+    const aria = `${select.id === 'searchSeller' ? 'Pilih seller untuk pencarian' : 'Pilih seller'}, ${text}`;
+    if (trigger.getAttribute('aria-label') !== aria) trigger.setAttribute('aria-label', aria);
   }
 
   function build(select) {
@@ -175,13 +176,10 @@
     });
   }
 
-  function sync() {
+  function syncNewSelects() {
     SELECTORS.forEach((selector) => {
       const select = document.querySelector(selector);
-      if (!select) return;
-      const wrapper = select.closest('.seller-dropdown');
-      if (wrapper) updateTrigger(wrapper);
-      else build(select);
+      if (select && select.dataset.customDropdown !== 'true') build(select);
     });
   }
 
@@ -193,9 +191,12 @@
     if (event.key === 'Escape' && openDropdown) closeDropdown(openDropdown);
   });
 
-  const observer = new MutationObserver(() => sync());
+  // Observe only for NEW native seller selects created by the SPA.
+  // Never update an already-built dropdown from the observer: its own
+  // change listener handles that, preventing a MutationObserver feedback loop.
+  const observer = new MutationObserver(syncNewSelects);
   observer.observe(document.getElementById('app') || document.body, { childList: true, subtree: true });
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync, { once: true });
-  else sync();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncNewSelects, { once: true });
+  else syncNewSelects();
 })();
