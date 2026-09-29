@@ -4,6 +4,7 @@ const CONFIG = {
   DATA_SHEET: 'RETUR_DATA',
   TIMEZONE: 'Asia/Jakarta',
   SELLER_CACHE_SECONDS: 600,
+  SEARCH_CACHE_SECONDS: 120,
 };
 
 let SPREADSHEET_CACHE = null;
@@ -67,8 +68,6 @@ function getSellers_() {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  // Only read the three fields required by the dropdown. Avoid getDataRange()
-  // and avoid setupSheets() on every read because the sheets are already provisioned.
   const values = sheet.getRange(2, 1, lastRow - 1, 3).getDisplayValues();
   const sellers = values
     .filter((row) => String(row[1]).trim() && String(row[2]).toLowerCase() !== 'false')
@@ -125,6 +124,7 @@ function saveReturns_(body) {
   const now = new Date();
   const startRow = sheet.getLastRow() + 1;
   sheet.getRange(startRow, 1, fresh.length, 4).setValues(fresh.map((awb) => [now, awb, seller, 'WEB']));
+  CacheService.getScriptCache().remove('retur_bgg16_search_v1');
 
   return {
     savedCount: fresh.length,
@@ -133,33 +133,62 @@ function saveReturns_(body) {
   };
 }
 
-function searchReturns_(body) {
-  setupSheets();
-  const query = norm_(body.q || '');
-  const sellerFilter = String(body.sellerName || '').trim().toLowerCase();
-  if (query.length < 3) return [];
+function loadReturnRows_() {
+  const cache = CacheService.getScriptCache();
+  const key = 'retur_bgg16_search_v1';
+  const cached = cache.get(key);
+  if (cached) return JSON.parse(cached);
 
   const sheet = getSheet_(CONFIG.DATA_SHEET);
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
   const values = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
-  const results = [];
+  const rows = values.map((row) => ({
+    timestamp: row[0] ? new Date(row[0]).getTime() : 0,
+    awb: norm_(row[1]),
+    sellerName: String(row[2] || '').trim(),
+  })).filter((row) => row.awb && row.sellerName);
 
-  for (let index = values.length - 1; index >= 0 && results.length < 200; index -= 1) {
-    const row = values[index];
-    const timestamp = row[0];
-    const awb = norm_(row[1]);
-    const sellerName = String(row[2] || '');
-    if (!awb || awb.indexOf(query) === -1) continue;
-    if (sellerFilter && sellerName.toLowerCase() !== sellerFilter) continue;
+  const payload = JSON.stringify(rows);
+  // CacheService has a per-entry size limit. Only cache compact indexes that fit safely.
+  if (payload.length <= 90000) cache.put(key, payload, CONFIG.SEARCH_CACHE_SECONDS);
+  return rows;
+}
 
-    results.push({
-      timestampText: timestamp ? Utilities.formatDate(new Date(timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : '',
-      awb,
-      sellerName,
-    });
+function searchReturns_(body) {
+  const queryRaw = String(body.q || '').trim();
+  const query = norm_(queryRaw);
+  if (query.length < 3) return { mode: 'awb', sellerName: '', data: [] };
+
+  const sellers = getSellers_();
+  const exactSeller = sellers.find((item) => norm_(item.name) === query);
+  const partialSellers = exactSeller ? [exactSeller] : sellers.filter((item) => norm_(item.name).indexOf(query) !== -1);
+
+  const rows = loadReturnRows_();
+  let mode = 'awb';
+  let matchedSeller = '';
+  let filtered = [];
+
+  if (exactSeller || partialSellers.length) {
+    mode = 'seller';
+    const sellerNames = new Set(partialSellers.map((item) => item.name.toLowerCase()));
+    filtered = rows.filter((row) => sellerNames.has(row.sellerName.toLowerCase()));
+    matchedSeller = partialSellers.length === 1 ? partialSellers[0].name : partialSellers.length + ' seller';
+  } else {
+    filtered = rows.filter((row) => row.awb.indexOf(query) !== -1);
   }
 
-  return results;
+  filtered.sort((a, b) => b.timestamp - a.timestamp);
+  filtered = filtered.slice(0, 500);
+
+  return {
+    mode,
+    sellerName: matchedSeller,
+    data: filtered.map((row) => ({
+      timestampText: row.timestamp ? Utilities.formatDate(new Date(row.timestamp), CONFIG.TIMEZONE, 'dd/MM/yyyy HH:mm:ss') : '',
+      awb: row.awb,
+      sellerName: row.sellerName,
+    })),
+  };
 }
