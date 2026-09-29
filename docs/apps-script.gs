@@ -39,6 +39,7 @@ function doGet(e) {
   try {
     const action = String(e?.parameter?.action || 'health');
     if (action === 'getSellers') return out_({ ok: true, data: getSellers_() });
+    if (action === 'getReturnSellers') return out_({ ok: true, data: getReturnSellers_() });
     return out_({ ok: true, service: 'retur-bgg16', time: new Date().toISOString() });
   } catch (error) {
     return out_({ ok: false, message: error.message || String(error) });
@@ -49,6 +50,7 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents || '{}');
     if (body.action === 'getSellers') return out_({ ok: true, data: getSellers_() });
+    if (body.action === 'getReturnSellers') return out_({ ok: true, data: getReturnSellers_() });
     if (body.action === 'addSeller') return out_({ ok: true, data: addSeller_(body.name) });
     if (body.action === 'saveReturns') return out_({ ok: true, data: saveReturns_(body) });
     if (body.action === 'searchReturns') return out_({ ok: true, data: searchReturns_(body) });
@@ -124,7 +126,8 @@ function saveReturns_(body) {
   const now = new Date();
   const startRow = sheet.getLastRow() + 1;
   sheet.getRange(startRow, 1, fresh.length, 4).setValues(fresh.map((awb) => [now, awb, seller, 'WEB']));
-  CacheService.getScriptCache().remove('retur_bgg16_search_v1');
+  CacheService.getScriptCache().remove('retur_bgg16_search_v2');
+  CacheService.getScriptCache().remove('retur_bgg16_return_sellers_v1');
 
   return {
     savedCount: fresh.length,
@@ -135,7 +138,7 @@ function saveReturns_(body) {
 
 function loadReturnRows_() {
   const cache = CacheService.getScriptCache();
-  const key = 'retur_bgg16_search_v1';
+  const key = 'retur_bgg16_search_v2';
   const cached = cache.get(key);
   if (cached) return JSON.parse(cached);
 
@@ -155,30 +158,51 @@ function loadReturnRows_() {
   return rows;
 }
 
+function getReturnSellers_() {
+  const cache = CacheService.getScriptCache();
+  const key = 'retur_bgg16_return_sellers_v1';
+  const cached = cache.get(key);
+  if (cached) return JSON.parse(cached);
+
+  const rows = loadReturnRows_();
+  const map = new Map();
+  rows.forEach((row) => {
+    const name = String(row.sellerName || '').trim();
+    if (!name) return;
+    const keyName = name.toLowerCase();
+    if (!map.has(keyName)) map.set(keyName, { name, count: 0 });
+    map.get(keyName).count += 1;
+  });
+
+  const sellers = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'id'));
+  const payload = JSON.stringify(sellers);
+  if (payload.length <= 90000) cache.put(key, payload, CONFIG.SEARCH_CACHE_SECONDS);
+  return sellers;
+}
+
 function searchReturns_(body) {
   const queryRaw = String(body.q || '').trim();
+  const sellerRaw = String(body.sellerName || '').trim();
   const query = norm_(queryRaw);
-  if (query.length < 3) return { mode: 'awb', sellerName: '', data: [] };
+  const sellerQuery = sellerRaw.toLowerCase();
 
-  const sellers = getSellers_();
-  const exactSeller = sellers.find((item) => norm_(item.name) === query);
-  const partialSellers = exactSeller ? [exactSeller] : sellers.filter((item) => norm_(item.name).indexOf(query) !== -1);
+  if (!query && !sellerQuery) return { mode: 'none', sellerName: '', data: [] };
 
   const rows = loadReturnRows_();
   let mode = 'awb';
   let matchedSeller = '';
-  let filtered = [];
+  let filtered;
 
-  if (exactSeller || partialSellers.length) {
+  if (sellerQuery) {
     mode = 'seller';
-    const sellerNames = new Set(partialSellers.map((item) => item.name.toLowerCase()));
-    filtered = rows.filter((row) => sellerNames.has(row.sellerName.toLowerCase()));
-    matchedSeller = partialSellers.length === 1 ? partialSellers[0].name : partialSellers.length + ' seller';
+    filtered = rows.filter((row) => row.sellerName.toLowerCase() === sellerQuery);
+    matchedSeller = filtered.length ? filtered[0].sellerName : sellerRaw;
   } else {
     filtered = rows.filter((row) => row.awb.indexOf(query) !== -1);
   }
 
   filtered.sort((a, b) => b.timestamp - a.timestamp);
+  filtered = filtered.slice(0, 500);
 
   return {
     mode,
